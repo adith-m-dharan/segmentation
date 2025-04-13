@@ -164,10 +164,10 @@ def run_test_loop(model, test_loader, device, epoch, criterion, results_dir, epo
                 img_np = to_pil_image(images[j].detach().cpu()).convert("RGB")
                 mask_np = masks[j].cpu().numpy()
                 pred_np = preds[j].cpu().numpy()
-                overlay = overlay_mask_on_image(np.array(img_np), pred_np)
-                fig = show_comparison(np.array(img_np), mask_np, overlay)
+                fig = show_comparison(original=np.array(img_np), gt_mask=mask_np, seg_mask=pred_np)
                 fig.savefig(os.path.join(save_dir, f"comparison_{i}_{j}.png"))
                 plt.close(fig)
+                
     avg_test_loss = total_loss / count if count else 0.0
     print(f"Average Test Loss: {avg_test_loss:.4f}")
     return avg_test_loss
