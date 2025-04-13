@@ -4,7 +4,7 @@ annotations:
   zip_name: annotations_trainval2017.zip
   json_path: annotations/instances_train2017.json
 
-target_categories: [3, 17, 18, 19]
+target_categories: [8, 16, 17, 47, 59, 63, 72]
 
 splits:
   train: 0.8
@@ -12,7 +12,7 @@ splits:
   inference: 0.01
 
 max_images: 5000
-mask_area_threshold: 0.2
+mask_area_threshold: 0.1
 seed: 42
 max_concurrency: 32
 

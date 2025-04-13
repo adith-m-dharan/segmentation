@@ -2,7 +2,7 @@
 
 # Model configuration
 model:
-  num_classes: 5
+  num_classes: 8
   backbone: "swin"             # Options: swin, resnet, etc.
   head: "mask2former"          # Options: mask2former, unet, etc.
   pretrained: true
