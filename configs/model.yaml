@@ -1,20 +1,21 @@
-# VisionSystem Model Config
+# Segmentation Model Config
 
 backbone:
-  img_size: 512
-  patch_size: 4
-  in_chans: 3
-  embed_dim: 128
-  depth: 3
-  num_heads: 4
-  window_size: 8
-
-feature_project_dim: 1024
+  img_size: 224                               # Input image size (height and width)
+  patch_size: 4                               # Patch size used for the initial embedding
+  in_chans: 3                                 # Number of input channels (e.g., RGB)
+  embed_dim: 16                               # Base embedding dimension → affects output channels as embed_dim × [1, 2, 4, 8]
+  depth: 2                                    # Number of Swin blocks per stage (i.e., depth per stage, not total stages)
+  num_heads: 2                                # Number of attention heads per stage (must divide embed_dim × 2^stage)
+  window_size: 8                              # Local window size for self-attention
+  shift_size: 4                               # Shift size (cyclic shift for SwinBlocks; usually 0 in stage 0)
+  num_stages: 2                               # Number of Swin stages → determines number of output feature maps (P2–P(N+1))
 
 head:
-  input_channels: [512, 512, 512]
-  num_classes: 8
-  d_model: 512
-  num_queries: 100
-  nhead: 4
-  num_decoder_layers: 6
+  input_channels: [32, 16]                    # Must match SwinBackbone outputs in reverse order: embed_dim × [2^(N−1), ..., 2^0], where N is num_stages
+  num_classes: 8                              # Number of segmentation classes
+  d_model: 64                                 # Transformer model dimension (must be divisible by nhead)
+  feature_project_dim: 128                    # Projection dim for all pixel decoder inputs (from input_channels → d_model)
+  num_queries: 100                            # Number of learnable object queries
+  nhead: 2                                    # Must divide d_model
+  rounds: 2                                    # Number of rounds in decoder layer

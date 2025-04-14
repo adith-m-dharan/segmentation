@@ -7,6 +7,7 @@ dependencies:
   - pip
   - pillow
   - numpy
+  - pandas
   - matplotlib
   - opencv
   - tqdm

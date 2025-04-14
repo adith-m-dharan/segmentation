@@ -1,3 +1,4 @@
+
 import os, sys, torch, wandb
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -11,39 +12,64 @@ from omegaconf import OmegaConf
 import argparse
 
 from datasets.lmdb_dataset import LmdbSegmentationDataset
-from models.vision_system import VisionSystem
+from models.segmentation import Segmentation
+from models.loss import MaskLoss
 from utils.lmdb_utils import prepare_lmdb
 from utils.train_utils import *
-
+import warnings
 torch.backends.cudnn.benchmark = True
 num_workers = min(4, multiprocessing.cpu_count() // 2)
 
-import warnings
 warnings.filterwarnings("ignore", message="You are using `torch.load` with `weights_only=False`", category=FutureWarning)
 warnings.filterwarnings("ignore", message="`torch.cuda.amp.*` is deprecated", category=FutureWarning)
 
-def main():
-    torch.autograd.set_detect_anomaly(True)
-    # Parse CLI for config path
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='configs/train.yaml', help="Path to config YAML")
-    args = parser.parse_args()
-    cfg = OmegaConf.load(args.config)
 
-    # Set device from config
-    device = torch.device(cfg.hardware.device if torch.cuda.is_available() else "cpu")
-    print(f"Running on device: {device}")
+def setup_model(cfg, device):
+    # Class Weights
+    mask_dir = os.path.join(cfg.paths.train_mask_dir)
+    num_classes = cfg.model.num_classes
+    class_info = compute_class_frequency(mask_dir, num_classes, cfg.paths.weights_path)
+    class_weights = torch.tensor([class_info[c]["weight"] for c in sorted(class_info)]).to(device)
 
-    # Define transform for images
+    if cfg.model.inbuilt:
+        from torchvision.models.segmentation import fcn_resnet50
+        import torch.nn.functional as F
+
+        criterion = lambda outputs, targets: (
+            F.cross_entropy(outputs["out"], targets.to(outputs["out"].device), weight=class_weights),
+            {"cross_entropy": F.cross_entropy(outputs["out"], targets.to(outputs["out"].device), weight=class_weights).item()}
+        )
+        model = fcn_resnet50(weights=None, num_classes=num_classes).to(device)
+        class_weights = torch.ones(num_classes).to(device)
+
+    else:
+        model = Segmentation(config_path=cfg.paths.model_config).to(device)
+        criterion = MaskLoss(
+            lambda_cls=cfg.training.weight_ce,
+            lambda_mask=cfg.training.weight_mask_bce,
+            lambda_dice=cfg.training.weight_dice,
+            class_weights=class_weights,
+            aux_weight=cfg.training.weight_aux
+        )
+
+    optimizer = optim.AdamW(model.parameters(), lr=cfg.training.learning_rate, weight_decay=cfg.training.weight_decay)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=cfg.training.step_size, gamma=cfg.training.gamma)
+
+    return model, criterion, optimizer, scheduler
+
+
+def setup_data(cfg):
+
+    # Image transform
     image_transform = transforms.Compose([
         transforms.Resize(tuple(cfg.dataset.transform_size)),
         transforms.ToTensor()
     ])
 
-    # Ensure LMDB is prepared (creates LMDB if missing)
-    prepare_lmdb()
+    # Ensure LMDB is prepared
+    prepare_lmdb(cfg.dataset.base_input, cfg.dataset.base_output)
 
-    # Create DataLoader for training and testing
+    # Dataset definitions
     train_dataset = LmdbSegmentationDataset(
         cfg.dataset.train_image_lmdb,
         cfg.dataset.train_mask_lmdb,
@@ -52,6 +78,7 @@ def main():
             np.array(x.resize(tuple(cfg.dataset.transform_size), resample=Image.NEAREST))
         ).long()
     )
+
     test_dataset = LmdbSegmentationDataset(
         cfg.dataset.test_image_lmdb,
         cfg.dataset.test_mask_lmdb,
@@ -61,135 +88,134 @@ def main():
         ).long()
     )
 
+    # DataLoaders
     train_loader = DataLoader(
-        train_dataset, 
-        batch_size=cfg.training.batch_size, 
-        shuffle=True,
-        num_workers=cfg.hardware.num_workers, 
-        pin_memory=cfg.hardware.pin_memory, 
-        persistent_workers=True
+        train_dataset, batch_size=cfg.training.batch_size, shuffle=True,
+        num_workers=cfg.hardware.num_workers, pin_memory=cfg.hardware.pin_memory, persistent_workers=True
     )
     test_loader = DataLoader(
-        test_dataset, 
-        batch_size=cfg.training.batch_size, 
-        shuffle=False,
-        num_workers=cfg.hardware.num_workers, 
-        pin_memory=cfg.hardware.pin_memory, 
-        persistent_workers=True
+        test_dataset, batch_size=cfg.training.batch_size, shuffle=False,
+        num_workers=cfg.hardware.num_workers, pin_memory=cfg.hardware.pin_memory, persistent_workers=True
     )
 
-    mask_dir = os.path.join(cfg.paths.train_mask_dir)  # e.g., data/prepared/train/masks
-    num_classes = cfg.model.num_classes  # include background if needed
-    class_weights = compute_class_frequency(mask_dir, num_classes, cfg.paths.weights_path).to(device)
+    return train_loader, test_loader
 
-    # Build the model from the config
-    # model = VisionSystemImport()
-    model = VisionSystem(config_path=cfg.paths.model_config).to(device)
-    criterion = ComboLoss(weight_ce=cfg.training.weight_ce, weight_dice=cfg.training.weight_dice, class_weights=class_weights)
-    optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, weight_decay=cfg.training.weight_decay)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=cfg.training.step_size, gamma=cfg.training.gamma)
-
-    # Initialize WandB if enabled
+def tracking_logs(epoch, avg_loss, model, optimizer, scheduler, cfg,
+                  test_loader, device, criterion):
     if cfg.logging.use_wandb:
-        wandb.init(project=cfg.logging.wandb_project, config=OmegaConf.to_container(cfg))
-        # Optional: use wandb.watch to log parameter histograms/gradients
+        wandb.log({"epoch": epoch, "train_loss": avg_loss}, commit=False)
+
+    # Periodic backups
+    if epoch % 10 == 0:
+        backup_ckpt = os.path.join(cfg.paths.checkpoint_dir, f"latest_epoch_{epoch}.pth")
+        backup_inf  = os.path.join(cfg.paths.checkpoint_dir, f"model_epoch_{epoch}.pth")
+        save_checkpoint(model, optimizer, scheduler, epoch, path=backup_ckpt)
+        save_checkpoint(model, path=backup_inf, inf_only=True)
+
+    # Periodic evaluation
+    if epoch % cfg.training.eval_freq == 0:
+        test_loss = run_test_loop(
+            model, test_loader, device, epoch,
+            criterion, cfg.paths.results_dir,
+            cfg.training.epochs, cfg.paths.weights_path,
+            cfg.model.inbuilt
+        )
+        if cfg.logging.use_wandb:
+            wandb.log({"epoch": epoch, "test_loss": test_loss}, commit=False)
+
+    # Learning rate logging
+    if cfg.logging.use_wandb:
+        wandb.log({"epoch": epoch, "learning_rate": optimizer.param_groups[0]["lr"]}, commit=True)
+
+def main(cfg):
+    torch.autograd.set_detect_anomaly(True)
+
+    device = torch.device(cfg.hardware.device if torch.cuda.is_available() else "cpu")
+    print(f"Running on device: {device}")
+
+    # Ensure LMDB is prepared
+    prepare_lmdb(cfg.dataset.base_input, cfg.dataset.base_output)
+
+    train_loader, test_loader = setup_data(cfg)
+    model, criterion, optimizer, scheduler = setup_model(cfg, device)
+
+    # WandB
+    if cfg.logging.use_wandb:
+        wandb.init(project=cfg.logging.wandb_project, config=OmegaConf.to_container(cfg), dir=cfg.logging.wandb_dir)
         wandb.watch(model, log="all", log_freq=cfg.logging.wandb_log_freq)
 
-    # Create checkpoint and results directories as per config
+    # Resume checkpoint
     os.makedirs(cfg.paths.checkpoint_dir, exist_ok=True)
     os.makedirs(cfg.paths.results_dir, exist_ok=True)
-
-    # Optionally load checkpoint for resume training
     start_epoch = 0
     if os.path.exists(cfg.paths.output_checkpoint):
         start_epoch = load_checkpoint(cfg.paths.output_checkpoint, model, optimizer, scheduler, device)
-        print(f"Resuming from epoch {start_epoch+1}")
+        print(f"Resuming from epoch {start_epoch + 1}")
 
     scaler = GradScaler() if cfg.hardware.use_amp else None
 
-    # Begin training loop
     try:
-        for epoch in range(start_epoch+1, cfg.training.epochs):
+        for epoch in range(start_epoch + 1, cfg.training.epochs + 1):
             model.train()
             epoch_loss = 0.0
             loop = tqdm(train_loader, desc=f"Epoch {epoch}/{cfg.training.epochs}")
+
             for i, (images, masks) in enumerate(loop):
-                images, masks = images.to(device), masks.to(device)
+                images = images.to(device)
+                masks = masks.to(device)
+
+                if cfg.model.inbuilt:
+                    targets = masks  # Use raw masks for the inbuilt model
+                else:
+                    targets = convert_semantic_to_targets(masks, cfg.model.num_classes)
+                    targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
                 optimizer.zero_grad()
 
                 with autocast(enabled=cfg.hardware.use_amp):
                     outputs = model(images)
-                    loss = criterion(outputs, masks)
+                    loss, loss_dict = criterion(outputs, targets)
 
-                # ==== NaN/Inf Loss Recovery ====
                 if torch.isnan(loss) or torch.isinf(loss):
                     print(f"[Warning] Loss exploded at Epoch {epoch}, Iteration {i}. Reloading checkpoint.")
                     torch.cuda.empty_cache()
                     load_checkpoint(cfg.paths.output_checkpoint, model, optimizer, scheduler, device)
                     scaler = GradScaler() if cfg.hardware.use_amp else None
-                    epoch -= 1  # Re-run this epoch from the start
-                    break  # Break out of batch loop to restart epoch
+                    epoch -= 1
+                    break
 
-                # Continue normal training
                 if scaler:
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.training.max_norm)
                     optimizer.step()
 
                 epoch_loss += loss.item()
                 loop.set_postfix(loss=loss.item())
 
-                # Detailed WandB logging at iteration level
-                loss_dict = {"total_loss": loss.item()}
                 if cfg.logging.use_wandb and (i % cfg.logging.wandb_log_freq == 0):
-                    detailed_log(i, epoch, loss_dict, optimizer, model, cfg.logging.wandb_log_freq)
+                    log_dict = {**loss_dict, "total_loss": loss.item()}
+                    detailed_log(i, epoch, log_dict, optimizer, model, cfg.logging.wandb_log_freq)
 
             avg_loss = epoch_loss / len(train_loader)
             print(f"Epoch {epoch}: Average Loss = {avg_loss:.4f}")
-            if cfg.logging.use_wandb:
-                wandb.log({"epoch": epoch, "train_loss": avg_loss}, commit=False)
 
-            # Step the learning rate scheduler if applicable
             scheduler.step()
 
-            # === Save full training checkpoint ===
+            # Save model
             save_checkpoint(model, optimizer, scheduler, epoch, path=cfg.paths.output_checkpoint)
-
-            # === Save inference-only model ===
             save_checkpoint(model, path=cfg.paths.output_inference_model, inf_only=True)
 
-            # === Save legacy backup only every 10 epochs ===
-            if (epoch) % 10 == 0:
-                os.makedirs(os.path.join(cfg.paths.checkpoint_dir), exist_ok=True)
-                backup_ckpt_path = os.path.join(cfg.paths.checkpoint_dir, f"latest_epoch_{epoch}.pth")
-                backup_inf_path = os.path.join(cfg.paths.checkpoint_dir, f"model_epoch_{epoch}.pth")
+            tracking_logs(epoch, avg_loss, model, optimizer, scheduler, cfg,
+              test_loader, device, criterion)
 
-                # Save full legacy checkpoint
-                save_checkpoint(model, optimizer, scheduler, epoch, path=backup_ckpt_path)
-
-                # Save legacy inference-only model
-                save_checkpoint(model, path=backup_inf_path, inf_only=True)
-
-            # Run test loop every eval_freq epochs
-            if (epoch) % cfg.training.eval_freq == 0:
-                test_loss = run_test_loop(model, test_loader, device, epoch, criterion, cfg.paths.results_dir, cfg.training.epochs)
-                if cfg.logging.use_wandb:
-                    wandb.log({"epoch": epoch, "test_loss": test_loss}, commit=False)
-
-            # Log learning rate at epoch end
-            if cfg.logging.use_wandb:
-                wandb.log({"epoch": epoch, "learning_rate": optimizer.param_groups[0]["lr"]}, commit=True)
-
-            # Optional: clear GPU cache at end of each epoch
             torch.cuda.empty_cache()
 
     except KeyboardInterrupt:
-        print("\nTraining interrupted. Exiting...")
-        torch.cuda.empty_cache()
+        print("Training interrupted.")
         if cfg.logging.use_wandb:
             wandb.finish()
         sys.exit(0)
@@ -200,10 +226,8 @@ def main():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Segmentation Model with Detailed Logging")
-    parser.add_argument('--config', type=str, default='configs/train.yaml', help="Path to the YAML config file")
+    parser = argparse.ArgumentParser(description="Train Segmentation Model")
+    parser.add_argument('--config', type=str, default='configs/train.yaml', help="Path to YAML config")
     args = parser.parse_args()
-    # Load configuration
     config = OmegaConf.load(args.config)
-    # Call main training function with the config
-    main()
+    main(config)

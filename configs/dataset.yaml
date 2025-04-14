@@ -1,10 +1,10 @@
-data_dir: data
+data_dir: run/data
 annotations:
   zip_url: http://images.cocodataset.org/annotations/annotations_trainval2017.zip
   zip_name: annotations_trainval2017.zip
   json_path: annotations/instances_train2017.json
 
-target_categories: [8, 16, 17, 47, 59, 63, 72]
+target_categories: [8, 16, 17, 47, 59, 63, 72] # +1 as background
 
 splits:
   train: 0.8

@@ -249,7 +249,7 @@ def prepare_dataset(coco, max_images, target_cats, output_base, mask_area_thresh
     def generate_and_save_coco_masks(image_ids, split_name):
         mask_dir = os.path.join(output_base, split_name, "masks")
         os.makedirs(mask_dir, exist_ok=True)
-        for img_id in tqdm(image_ids, desc=f"Generating masks for {split_name}"):
+        for img_id in tqdm(image_ids, desc=f"\nGenerating masks for {split_name}"):
             img_info = coco.loadImgs(img_id)[0]
             W, H = img_info['width'], img_info['height']
             file_name = img_info['file_name']

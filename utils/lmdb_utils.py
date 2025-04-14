@@ -1,7 +1,6 @@
 import os
 import lmdb
 import cv2
-import numpy as np
 from tqdm import tqdm
 from glob import glob
 
@@ -31,7 +30,7 @@ def save_filtered_to_lmdb(input_dir, lmdb_path, file_list, ext=".png", map_size=
 
     env.close()
 
-def prepare_lmdb(base_input="data/prepared", base_output="data/lmdb"):
+def prepare_lmdb(base_input, base_output):
     """
     Checks for LMDB files for each split (train, test). If they do not exist,
     it builds them by matching files in the images and masks directories based on basename.

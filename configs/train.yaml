@@ -3,9 +3,7 @@
 # Model configuration
 model:
   num_classes: 8
-  backbone: "swin"             # Options: swin, resnet, etc.
-  head: "mask2former"          # Options: mask2former, unet, etc.
-  pretrained: true
+  inbuilt: True
 
 # Training hyperparameters
 training:
@@ -17,7 +15,10 @@ training:
   scheduler: "step"            # Options: step, cosine, etc.
   step_size: 20
   gamma: 0.5
+  eos_coef: 0.1
+  weight_aux: 0.5
   weight_decay: 1e-3
+  weight_mask_bce: 1.0
   weight_ce: 1.0               # Weight for CrossEntropy
   weight_dice: 1.0             # Weight for Dice Loss
   warmup: true                # Enable warmup scheduling if desired
@@ -27,25 +28,28 @@ training:
 
 # Dataset and DataLoader settings
 dataset:
-  train_image_lmdb: "data/lmdb/train_images.lmdb"
-  train_mask_lmdb: "data/lmdb/train_masks.lmdb"
-  test_image_lmdb: "data/lmdb/test_images.lmdb"
-  test_mask_lmdb: "data/lmdb/test_masks.lmdb"
-  transform_size: [512, 512]   # Target image resize dimensions
+  data_yaml: "configs/dataset.yaml"
+  base_input: "run/data/prepared"
+  base_output: "run/data/lmdb"
+  train_image_lmdb: "run/data/lmdb/train_images.lmdb"
+  train_mask_lmdb: "run/data/lmdb/train_masks.lmdb"
+  test_image_lmdb: "run/data/lmdb/test_images.lmdb"
+  test_mask_lmdb: "run/data/lmdb/test_masks.lmdb"
+  transform_size: [224, 224]   # Target image resize dimensions
 
 # Paths for saving logs and results
 paths:
-  weights_path: "data/prepared/train/class_weights.pt"
-  train_mask_dir: "data/prepared/train/masks"
-  checkpoint_dir: "logs/checkpoints"
-  output_checkpoint: "logs/checkpoints/latest.pth"
-  output_inference_model: "logs/checkpoints/model.pth"
-  results_dir: "logs/results"
+  weights_path: "run/data/prepared/train/class_weights.pt"
+  train_mask_dir: "run/data/prepared/train/masks"
+  checkpoint_dir: "run/logs/checkpoints"
+  output_checkpoint: "run/logs/checkpoints/latest.pth"
+  output_inference_model: "run/logs/checkpoints/model.pth"
+  results_dir: "run/logs/results"
   model_config: "configs/model.yaml"
 
 # Hardware optimization and resource settings
 hardware:
-  device: "cuda"               # Options: "cuda" or "cpu"
+  device: "cuda:1"               # Options: "cuda" or "cpu"
   use_amp: true                # Automatic Mixed Precision
   num_workers: 4               # For DataLoader
   pin_memory: true             # Enable pin_memory for faster host-to-GPU transfer
@@ -54,6 +58,7 @@ hardware:
 logging:
   use_wandb: true
   wandb_project: "segmentation_project"
+  wandb_dir: "run/wandb"
   print_log_freq: 100
   image_log_freq: 1000
   wandb_log_freq: 10

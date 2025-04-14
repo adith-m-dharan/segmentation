@@ -3,105 +3,138 @@ import torch.nn as nn
 from tqdm import tqdm
 from PIL import Image
 import numpy as np
+import pandas as pd
+import yaml
+import json
+from PIL import Image
 
 from utils.visualizer import show_comparison
 import matplotlib.pyplot as plt
 from collections import Counter
 from torchvision.transforms.functional import to_pil_image
 
+def convert_semantic_to_targets(masks, num_classes):
+    """
+    Convert semantic masks (B, H, W) to target format:
+    [{'labels': Tensor[num_objects], 'masks': Tensor[num_objects, H, W]}, ...]
+    """
+    targets = []
+    for mask in masks:
+        unique_classes = mask.unique()
+        labels = []
+        binary_masks = []
+        for cls in unique_classes:
+            if int(cls) == 255:  # ignore class
+                continue
+            labels.append(cls)
+            binary_masks.append((mask == cls).float())
+        if len(binary_masks) == 0:
+            binary_masks = [torch.zeros_like(mask).float()]
+            labels = [torch.tensor(0)]
+        target = {
+            "labels": torch.stack(labels) if isinstance(labels[0], torch.Tensor) else torch.tensor(labels),
+            "masks": torch.stack(binary_masks)
+        }
+        targets.append(target)
+    return targets
 
-class ComboLoss(nn.Module):
-    def __init__(self, weight_ce=1.0, weight_dice=1.0, smooth=1.0, class_weights=None):
-        """
-        Args:
-            weight_ce (float): Weight for CrossEntropyLoss.
-            weight_dice (float): Weight for Dice Loss.
-            smooth (float): Smoothing constant for Dice Loss.
-            class_weights (torch.Tensor or None): Class weights for CrossEntropyLoss.
-        """
-        super().__init__()
-        self.ce = nn.CrossEntropyLoss(weight=class_weights)
-        self.weight_ce = weight_ce
-        self.weight_dice = weight_dice
-        self.smooth = smooth
+def load_coco_class_names(dataset_yaml_path="configs/dataset.yaml", include_background=True):
+    """
+    Returns:
+        dict[int, dict]: Mapping of contiguous class index to a dictionary with keys
+                        "coco_id" and "name".  
+                        If include_background is True, a background class is added at index 0.
+    """
+    with open(dataset_yaml_path, "r") as f:
+        cfg = yaml.safe_load(f)
 
-    def forward(self, preds, targets):
-        ce_loss = self.ce(preds, targets)
-        dice_loss = self._dice_loss(preds, targets)
-        return self.weight_ce * ce_loss + self.weight_dice * dice_loss
+    annotation_json = os.path.join(cfg['data_dir'], cfg['annotations']['json_path'])
+    with open(annotation_json, 'r') as f:
+        coco_data = json.load(f)
 
-    def _dice_loss(self, preds, targets):
-        preds = torch.softmax(preds, dim=1)
-        num_classes = preds.size(1)
-        dice = 0.0
-        for c in range(num_classes):
-            pred_c = preds[:, c, :, :]
-            target_c = (targets == c).float()
-            intersection = (pred_c * target_c).sum()
-            union = pred_c.sum() + target_c.sum()
-            denom = torch.clamp(union + self.smooth, min=1e-6)
-            dice += 1 - (2. * intersection + self.smooth) / denom
-        return dice / num_classes
+    # Build a dictionary: COCO category ID -> name.
+    coco_id_to_name = {cat['id']: cat['name'] for cat in coco_data['categories']}
 
+    # Get the target category ids (assumed to exclude background).
+    target_ids = sorted(cfg['target_categories'])
+
+    class_idx_to_info = {}
+    start_idx = 0
+    if include_background:
+        class_idx_to_info[0] = {"coco_id": 0, "name": "background"}
+        start_idx = 1
+
+    for idx, coco_id in enumerate(target_ids, start=start_idx):
+        class_idx_to_info[idx] = {
+            "coco_id": coco_id,
+            "name": coco_id_to_name.get(coco_id, f"COCO ID {coco_id}")
+        }
+
+    print("[Info] Loaded COCO category names:")
+    for idx, info in class_idx_to_info.items():
+        print(f"  Class {idx} -> {info['name']} (COCO ID {info['coco_id']})")
+
+    return class_idx_to_info
 
 def compute_class_frequency(mask_folder, num_classes, save_path=None):
     """
-    Computes inverse class weights based on pixel frequency in the training masks.
-
-    Args:
-        mask_folder (str): Path to folder containing .png mask files.
-        num_classes (int): Number of classes (including background as class 0).
-        save_path (str): Path to save the computed weights (default: class_weights.pt).
-
+    Computes inverse class weights based on pixel frequency in training masks.
     Returns:
-        torch.Tensor: Normalized class weights of shape (num_classes,).
+        dict[int, dict]: Mapping from contiguous class index to a dict with keys:
+                         "weight", "coco_id", "name"
     """
-
-    if save_path is not None and os.path.exists(save_path):
+    if save_path and os.path.exists(save_path):
         print(f"[Info] Loading precomputed class weights from {save_path}")
-        weights = torch.load(save_path).float()
-        # weights = weights / weights.sum()  # Normalize to sum to 1
+        class_data = torch.load(save_path)
+        df = pd.DataFrame.from_dict(class_data, orient="index")
+        df.index.name = "class_id"
+        df["weight"] = df["weight"].round(6)
+        print(df)
+        return class_data
 
-        print("Loaded Class Weights (including background):")
-        for c, w in enumerate(weights.tolist()):
-            print(f"  Class {c}: {w:.6f}")
-        return weights
+    print(f"[Info] Computing class weights for {num_classes} total classes")
 
-    print(f"[Info] Computing class weights for {num_classes} total classes (including background)")
-    
-    # Sanity check: print unique labels
-    unique_labels = set()
-    for fname in os.listdir(mask_folder):
-        if fname.endswith('.png'):
-            mask = np.array(Image.open(os.path.join(mask_folder, fname)))
-            unique_labels.update(np.unique(mask).tolist())
-    print(f"[Check] Unique labels found in masks: {sorted(unique_labels)}")
+    # Load class names (with background included)
+    class_names = load_coco_class_names(include_background=True)
 
-    # Count pixels
+    # Count pixel frequency in all mask images (assumes .png files)
     pixel_counter = Counter()
     for fname in os.listdir(mask_folder):
-        if fname.endswith('.png'):
+        if fname.endswith(".png"):
             mask = np.array(Image.open(os.path.join(mask_folder, fname)))
             pixel_counter.update(mask.flatten().tolist())
 
     total_pixels = sum(pixel_counter.values())
-    weights = []
+    raw_weights = []
     for c in range(num_classes):
-        class_pixels = pixel_counter.get(c, 1)  # Avoid divide-by-zero
+        # To avoid division by zero, ensure a minimal count
+        class_pixels = pixel_counter.get(c, 1)
         freq = class_pixels / total_pixels
         weight = 1.0 / freq
-        weights.append(weight)
+        raw_weights.append(weight)
 
-    weights = torch.tensor(weights, dtype=torch.float32)
-    weights = weights / weights.sum()  # Normalize to sum to 1
+    norm_weights = np.array(raw_weights) / np.sum(raw_weights)
 
-    print("Class Weights (including background):")
-    for c, w in enumerate(weights.tolist()):
-        print(f"  Class {c}: {w:.6f}")
+    # Build the final dictionary.
+    class_data = {}
+    for i in range(num_classes):
+        class_data[i] = {
+            "weight": float(norm_weights[i]),
+            "coco_id": class_names.get(i, {}).get("coco_id", -1),
+            "name": class_names.get(i, {}).get("name", f"Class {i}")
+        }
 
-    torch.save(weights, save_path)
-    print(f"[Info] Class weights saved to {save_path}")
-    return weights
+    if save_path:
+        torch.save(class_data, save_path)
+        print(f"[Info] Saved class info to {save_path}")
+
+    df = pd.DataFrame.from_dict(class_data, orient="index")
+    df.index.name = "class_id"
+    df["weight"] = df["weight"].round(6)
+    print(df)
+
+    return class_data
+
 
 def detailed_log(i, epoch, loss_dict, optimizer, model, wandb_log_freq):
     log_data = {
@@ -127,7 +160,7 @@ def detailed_log(i, epoch, loss_dict, optimizer, model, wandb_log_freq):
         wandb.log(log_data, commit=True)
 
 
-def run_test_loop(model, test_loader, device, epoch, criterion, results_dir, epochs):
+def run_test_loop(model, test_loader, device, epoch, criterion, results_dir, epochs, class_info, inbuilt=False):
     model.eval()
     save_dir = os.path.join(results_dir, f"epoch_{epoch}")
     os.makedirs(save_dir, exist_ok=True)
@@ -137,19 +170,31 @@ def run_test_loop(model, test_loader, device, epoch, criterion, results_dir, epo
         for i, (images, masks) in enumerate(tqdm(test_loader, desc=f"Evaluating {epoch}/{epochs}")):
             images, masks = images.to(device), masks.to(device)
             outputs = model(images)
-            loss = criterion(outputs, masks)
+
+            # Choose target format based on model type
+            if inbuilt:
+                targets = masks
+            else:
+                targets = convert_semantic_to_targets(masks, num_classes=outputs["pred_logits"].shape[-1])
+                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+            loss, _ = criterion(outputs, targets)
             total_loss += loss.item()
             count += 1
 
-            preds = torch.argmax(outputs, dim=1)
+            if inbuilt:
+                preds = torch.argmax(outputs["out"], dim=1)
+            else:
+                preds = torch.argmax(outputs["pred_masks"], dim=1)
+
             for j in range(0, images.size(0), 50):
                 img_np = to_pil_image(images[j].detach().cpu()).convert("RGB")
                 mask_np = masks[j].cpu().numpy()
                 pred_np = preds[j].cpu().numpy()
-                fig = show_comparison(original=np.array(img_np), gt_mask=mask_np, seg_mask=pred_np)
+                fig = show_comparison(original=np.array(img_np), gt_mask=mask_np, seg_mask=pred_np, class_info=class_info)
                 fig.savefig(os.path.join(save_dir, f"comparison_{i}_{j}.png"))
                 plt.close(fig)
-                
+
     avg_test_loss = total_loss / count if count else 0.0
     print(f"Average Test Loss: {avg_test_loss:.4f}")
     return avg_test_loss
