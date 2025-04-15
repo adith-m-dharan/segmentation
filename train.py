@@ -1,6 +1,7 @@
 
 import os, sys, torch, wandb
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torch.cuda.amp import autocast, GradScaler
@@ -33,7 +34,6 @@ def setup_model(cfg, device):
 
     if cfg.model.inbuilt:
         from torchvision.models.segmentation import fcn_resnet50
-        import torch.nn.functional as F
 
         criterion = lambda outputs, targets: (
             F.cross_entropy(outputs["out"], targets.to(outputs["out"].device), weight=class_weights),
