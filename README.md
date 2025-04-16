@@ -158,7 +158,7 @@ python inference/inference.py
 
 ## Sample Inference Results
 
-| ![](assets/output_1.png) | ![](assets/output_2.png) | ![](assets/wandb.png) |
+Check assests folder
 
 ---
 
