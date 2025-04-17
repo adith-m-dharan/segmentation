@@ -15,8 +15,10 @@ dependencies:
   - aiohttp
   - pycocotools
   - omegaconf
+  - plotly
+  - scipy
   - pip:
       - torchvision
       - wandb
       - lmdb
-
+      - dash

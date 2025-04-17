@@ -3,27 +3,28 @@
 # Model configuration
 model:
   num_classes: 8
-  inbuilt: True
+  inbuilt: False
+  inference_prebuilt: True
 
 # Training hyperparameters
 training:
   epochs: 100
-  batch_size: 64
+  batch_size: 2
   eval_freq: 5
   learning_rate: 1e-5
   optimizer: "adamw"
-  scheduler: "step"            # Options: step, cosine, etc.
+  scheduler: "step"
   step_size: 20
   gamma: 0.5
   eos_coef: 0.1
   weight_aux: 0.5
   weight_decay: 1e-3
   weight_mask_bce: 1.0
-  weight_ce: 1.0               # Weight for CrossEntropy
-  weight_dice: 1.0             # Weight for Dice Loss
-  warmup: true                # Enable warmup scheduling if desired
-  warmup_epochs: 5             # Number of warmup epochs
-  clipping: true              # Gradient clipping flag
+  weight_ce: 1.0
+  weight_dice: 1.0
+  warmup: true
+  warmup_epochs: 5
+  clipping: true
   max_norm: 1.0
 
 # Dataset and DataLoader settings
@@ -35,7 +36,7 @@ dataset:
   train_mask_lmdb: "run/data/lmdb/train_masks.lmdb"
   test_image_lmdb: "run/data/lmdb/test_images.lmdb"
   test_mask_lmdb: "run/data/lmdb/test_masks.lmdb"
-  transform_size: [224, 224]   # Target image resize dimensions
+  transform_size: [224, 224]
 
 # Paths for saving logs and results
 paths:
@@ -49,10 +50,10 @@ paths:
 
 # Hardware optimization and resource settings
 hardware:
-  device: "cuda:1"               # Options: "cuda" or "cpu"
-  use_amp: true                # Automatic Mixed Precision
-  num_workers: 4               # For DataLoader
-  pin_memory: true             # Enable pin_memory for faster host-to-GPU transfer
+  device: "cuda"
+  use_amp: true
+  num_workers: 4
+  pin_memory: true
 
 # Logging configuration (using wandb, if enabled)
 logging:

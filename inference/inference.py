@@ -1,59 +1,125 @@
-import os
+import dash
+from dash import dcc, html, Input, Output
+import base64
+import io
+from PIL import Image
 import torch
 import numpy as np
-from PIL import Image
 from torchvision import transforms
-import matplotlib.pyplot as plt
+from omegaconf import OmegaConf
 
-from models.vision_system import VisionSystem
-from utils.visualizer import overlay_mask_on_image, show_comparison
-from torchvision.transforms.functional import to_pil_image
+from inference_utils import load_model, run_inference, visualize_result
+
+# Load configuration and model.
+cfg = OmegaConf.load("configs/train.yaml")
+device = torch.device(cfg.hardware.device if torch.cuda.is_available() else "cpu")
+model = load_model(cfg, device)
+model.eval()
+
+# Image preprocessing (preserving aspect ratio)
+transform = transforms.Compose([
+    transforms.Resize(max(cfg.dataset.transform_size), interpolation=Image.BILINEAR),
+    transforms.ToTensor()
+])
+
+# Initialize Dash app
+app = dash.Dash(__name__)
+app.title = "Segmentation Dashboard"
+app.css.config.serve_locally = False
+
+# Dark theme layout
+app.layout = html.Div(
+    style={
+        'backgroundColor': '#121212',
+        'color': '#e0e0e0',
+        'fontFamily': 'Segoe UI, sans-serif',
+        'minHeight': '100vh',
+        'paddingBottom': '50px'
+    },
+    children=[
+        html.H1("Semantic Segmentation Dashboard", style={
+            'textAlign': 'center',
+            'paddingTop': '20px',
+            'color': '#f5f5f5',
+            'textShadow': '1px 1px 3px #000'
+        }),
+
+        dcc.Upload(
+            id='upload-image',
+            children=html.Div([
+                "📤 Drag and Drop or ",
+                html.A("Select an Image", style={'color': '#f48fb1'})
+            ]),
+            style={
+                'width': '60%',
+                'height': '120px',
+                'lineHeight': '120px',
+                'borderWidth': '2px',
+                'borderStyle': 'dashed',
+                'borderRadius': '10px',
+                'borderColor': '#555',
+                'textAlign': 'center',
+                'margin': '30px auto',
+                'backgroundColor': '#1e1e1e',
+                'color': '#e0e0e0',
+                'fontSize': '18px'
+            },
+            multiple=False
+        ),
+
+        html.Div(id='output-image'),
+
+        html.Div([
+            dcc.Graph(
+                id='predicted-mask',
+                style={
+                    'display': 'none',
+                    'backgroundColor': '#121212'
+                },
+                config={'displayModeBar': False}
+            )
+        ], style={
+            'display': 'flex',
+            'justifyContent': 'center',
+            'alignItems': 'center',
+            'marginTop': '20px'
+        })
+    ]
+)
 
 
-def infer(image_path, checkpoint_path, save_path, num_classes):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def parse_image(contents):
+    content_type, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
+    return Image.open(io.BytesIO(decoded)).convert("RGB")
 
-    # Load model
-    model = VisionSystem(num_classes=num_classes)
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-    model = model.to(device)
-    model.eval()
 
-    # Preprocess image
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-    ])
-    image_pil = Image.open(image_path).convert("RGB")
-    image_tensor = transform(image_pil).unsqueeze(0).to(device)
+@app.callback(
+    Output('predicted-mask', 'figure'),
+    Output('predicted-mask', 'style'),
+    Input('upload-image', 'contents')
+)
+def update_output(content):
+    if content is None:
+        return {"data": [], "layout": {}}, {'display': 'none'}
+
+    image = parse_image(content)
+    image_tensor = transform(image).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        output = model(image_tensor)
-        pred = torch.argmax(output, dim=1).squeeze().cpu().numpy()
+        pred_mask = run_inference(model, image_tensor, cfg.model.inference_prebuilt)
 
-    image_np = np.array(image_pil.resize((224, 224)))
-    overlay = overlay_mask_on_image(image_np, pred)
+    fig = visualize_result(image, pred_mask)
+    return fig, {
+        'display': 'block',
+        'margin': '0 auto',
+        'backgroundColor': '#121212'
+    }
 
-    os.makedirs(save_path, exist_ok=True)
-    Image.fromarray(image_np).save(os.path.join(save_path, "original_image.png"))
-    Image.fromarray(pred.astype(np.uint8)).save(os.path.join(save_path, "segmented_output.png"))
-    Image.fromarray(overlay).save(os.path.join(save_path, "overlay_output.png"))
 
-    # Save only side-by-side comparison
-    fig = show_comparison(image_np, np.zeros_like(pred), overlay)  # no ground truth in inference
-    os.makedirs(save_path, exist_ok=True)
-    fig.savefig(os.path.join(save_path, "comparison.png"))
-    plt.close(fig)
-
-    print(f"Inference complete. Output saved to {save_path}")
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--image", required=True, help="Path to input image")
-    parser.add_argument("--checkpoint", default="outputs/checkpoints/model_epoch_20.pth", help="Path to model checkpoint")
-    parser.add_argument("--save_dir", default="results/inference", help="Directory to save output")
-    parser.add_argument("--num_classes", type=int, default=6, help="Total number of classes (including background)")
-    args = parser.parse_args()
-
-    infer(args.image, args.checkpoint, args.save_dir, args.num_classes)
+if __name__ == '__main__':
+    try:
+        app.run(debug=True)
+    except KeyboardInterrupt:
+        print("KeyboardInterrupt received. Exiting gracefully.")
+        exit(0)
