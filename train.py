@@ -1,22 +1,27 @@
+try:
+    import os, sys, torch, wandb
+    import torch.optim as optim
+    import torch.nn.functional as F
+    from torch.utils.data import DataLoader
+    from torchvision import transforms
+    from torch.cuda.amp import autocast, GradScaler
+    from tqdm import tqdm
+    from PIL import Image
+    import numpy as np
+    import multiprocessing
+    from omegaconf import OmegaConf
+    import argparse
 
-import os, sys, torch, wandb
-import torch.optim as optim
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from torchvision import transforms
-from torch.cuda.amp import autocast, GradScaler
-from tqdm import tqdm
-from PIL import Image
-import numpy as np
-import multiprocessing
-from omegaconf import OmegaConf
-import argparse
+    from datasets.lmdb_dataset import LmdbSegmentationDataset
+    from models.segmentation import Segmentation
+    from models.loss import MaskLoss
+    from utils.lmdb_utils import prepare_lmdb
+    from utils.train_utils import *
+except ImportError as e:
+    print("\n[Import Error] A module failed to import:", e)
+    print("Make sure conda environment is activated and all required packages are installed. If conda environment is not setup, set it up from 'configs/environment.yaml'")
+    sys.exit(1)  # Exit with error
 
-from datasets.lmdb_dataset import LmdbSegmentationDataset
-from models.segmentation import Segmentation
-from models.loss import MaskLoss
-from utils.lmdb_utils import prepare_lmdb
-from utils.train_utils import *
 import warnings
 torch.backends.cudnn.benchmark = True
 num_workers = min(4, multiprocessing.cpu_count() // 2)
@@ -34,17 +39,33 @@ def setup_model(cfg, device):
 
     if cfg.model.inbuilt:
         from torchvision.models.segmentation import fcn_resnet50
-        from torchvision.models import resnet50
+        import torch.nn.functional as F
+        import torchvision.transforms as T
 
+        print("Using Inbuilt model")
+        model = fcn_resnet50(weights=None, weights_backbone=None, num_classes=num_classes).to(device)
+        normalize_transform = T.Normalize(mean=[0.485, 0.456, 0.406],
+                                        std=[0.229, 0.224, 0.225])
+        class NormalizedFCN(torch.nn.Module):
+            def __init__(self, model, normalize):
+                super().__init__()
+                self.model = model
+                self.normalize = normalize
+
+            def forward(self, x):
+                x = x.float() / 255.0 if x.max() > 1 else x
+                x = self.normalize(x)
+                return self.model(x)
+        
+        model = NormalizedFCN(model, normalize_transform).to(device)
+        class_weights = torch.ones(num_classes, device=device)
         criterion = lambda outputs, targets: (
             F.cross_entropy(outputs["out"], targets.to(outputs["out"].device), weight=class_weights),
             {"cross_entropy": F.cross_entropy(outputs["out"], targets.to(outputs["out"].device), weight=class_weights).item()}
         )
-        backbone = resnet50(weights=None)
-        model = fcn_resnet50(weights=None, num_classes=num_classes).to(device)
-        class_weights = torch.ones(num_classes).to(device)
 
     else:
+        print("Using Custom Model")
         model = Segmentation(config_path=cfg.paths.model_config).to(device)
         criterion = MaskLoss(
             lambda_cls=cfg.training.weight_ce,
@@ -168,7 +189,7 @@ def main(cfg):
                 masks = masks.to(device)
 
                 if cfg.model.inbuilt:
-                    targets = masks  # Use raw masks for the inbuilt model
+                    targets = masks
                 else:
                     targets = convert_semantic_to_targets(masks, cfg.model.num_classes)
                     targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
@@ -233,4 +254,10 @@ if __name__ == "__main__":
     parser.add_argument('--config', type=str, default='configs/train.yaml', help="Path to YAML config")
     args = parser.parse_args()
     config = OmegaConf.load(args.config)
-    main(config)
+
+    try:
+        main(config)
+    except KeyboardInterrupt:
+        print("\n[Keyboard Interrupt] Training stopped by user.")
+        sys.exit(0)
+

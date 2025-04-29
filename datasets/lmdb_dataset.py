@@ -1,3 +1,5 @@
+import os
+import sys
 import lmdb
 import torch
 import cv2
@@ -7,8 +9,14 @@ from torch.utils.data import Dataset
 
 class LmdbSegmentationDataset(Dataset):
     def __init__(self, image_lmdb_path, mask_lmdb_path, transform=None, target_transform=None):
-        self.image_env = lmdb.open(image_lmdb_path, readonly=True, lock=False)
-        self.mask_env = lmdb.open(mask_lmdb_path, readonly=True, lock=False)
+        if not (os.path.exists(image_lmdb_path) and os.path.exists(mask_lmdb_path)):
+            print("\n[Error] LMDB files not found.")
+            print("Prepare the dataset first by running the 'datasets/prepare_dataset.py' file.\n")
+            sys.exit(0)  # Exit cleanly without throwing an error
+        else:
+            print("LMDB files found. Proceeding to load...")
+            self.image_env = lmdb.open(image_lmdb_path, readonly=True, lock=False)
+            self.mask_env = lmdb.open(mask_lmdb_path, readonly=True, lock=False)
 
         with self.image_env.begin() as txn:
             self.keys = [key for key, _ in txn.cursor()]

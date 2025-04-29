@@ -12,19 +12,15 @@ training:
   batch_size: 8
   eval_freq: 5
   learning_rate: 1e-5
-  optimizer: "adamw"
-  scheduler: "step"
+  optimizer: "adamw"          # Hardcoded
+  scheduler: "step"           # Hardcoded
   step_size: 20
   gamma: 0.5
-  eos_coef: 0.1
   weight_aux: 0.5
   weight_decay: 1e-3
   weight_mask_bce: 1.0
   weight_ce: 1.0
   weight_dice: 1.0
-  warmup: true
-  warmup_epochs: 5
-  clipping: true
   max_norm: 1.0
   sample_points: 128
 
@@ -60,7 +56,5 @@ hardware:
 logging:
   use_wandb: true
   wandb_project: "segmentation_project"
-  wandb_dir: "run/wandb"
-  print_log_freq: 100
-  image_log_freq: 1000
+  wandb_dir: "run"
   wandb_log_freq: 10
