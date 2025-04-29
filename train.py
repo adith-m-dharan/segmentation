@@ -34,11 +34,13 @@ def setup_model(cfg, device):
 
     if cfg.model.inbuilt:
         from torchvision.models.segmentation import fcn_resnet50
+        from torchvision.models import resnet50
 
         criterion = lambda outputs, targets: (
             F.cross_entropy(outputs["out"], targets.to(outputs["out"].device), weight=class_weights),
             {"cross_entropy": F.cross_entropy(outputs["out"], targets.to(outputs["out"].device), weight=class_weights).item()}
         )
+        backbone = resnet50(weights=None)
         model = fcn_resnet50(weights=None, num_classes=num_classes).to(device)
         class_weights = torch.ones(num_classes).to(device)
 
@@ -49,6 +51,7 @@ def setup_model(cfg, device):
             lambda_mask=cfg.training.weight_mask_bce,
             lambda_dice=cfg.training.weight_dice,
             class_weights=class_weights,
+            num_sample_points=cfg.training.sample_points,
             aux_weight=cfg.training.weight_aux
         )
 

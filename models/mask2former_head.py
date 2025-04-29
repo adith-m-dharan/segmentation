@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class AttentionFusionBlock(nn.Module):
-    def __init__(self, d_model, num_heads=8, dropout=0.1):
+    def __init__(self, d_model, num_heads, dropout=0.1):
         """
         Fuse two features using multi-head cross-attention.
         Query comes from an upsampled (lower-res) fused feature.
@@ -62,7 +62,7 @@ class AttentionFusionBlock(nn.Module):
 
 
 class PixelDecoder(nn.Module):
-    def __init__(self, input_channels, d_model, num_heads=8):
+    def __init__(self, input_channels, d_model, num_heads):
         """
         Args:
             input_channels (list): List of backbone channel dims in order [P5, P4, P3, P2].
@@ -197,6 +197,7 @@ class Mask2FormerHead(nn.Module):
         )
 
         self.query_embed = nn.Embedding(num_queries, d_model)
+        self.query_norm = nn.LayerNorm(d_model)
         self.class_head = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.ReLU(inplace=True),
@@ -213,6 +214,7 @@ class Mask2FormerHead(nn.Module):
         B, C, H, W = fused_feature.shape
 
         queries = self.query_embed.weight.unsqueeze(1).repeat(1, B, 1)  # (num_queries, B, d_model)
+        queries = self.query_norm(queries)
         queries, intermediate_masks = self.transformer_decoder(queries, multi_scale_features)
 
         cls_logits = self.class_head(queries.transpose(0,1))  # (B, num_queries, num_classes)
@@ -222,18 +224,20 @@ class Mask2FormerHead(nn.Module):
         mask_logits = mask_logits.view(B, -1, H, W)
         return cls_logits, mask_logits, intermediate_masks
 
+
+
 # Quick test (optional):
 if __name__ == "__main__":
-    B = 2
+    B = 1
     # Define spatial sizes and corresponding channel dimensions for backbone features.
     spatial_sizes = [(128, 128), (64, 64), (32, 32), (16, 16), (8, 8)]
     channels_list = [128, 256, 512, 1024, 2048]
 
-    config_path = "configs/model.yaml"  # Set to a path to load config; or use None for manual test.
+    config_path = None # "configs/model.yaml"  # Set to a path to load config; or use None for manual test.
 
     if config_path is None:
         # Manual test: loop over number of feature levels (simulate different backbone outputs).
-        for num_feats in range(4, 6):
+        for num_feats in range(2, 6):
             print(f"\n--- Testing with {num_feats} feature levels ---")
             features = []
             input_channels = []
@@ -254,7 +258,11 @@ if __name__ == "__main__":
                 rounds=1  # You can set rounds=3 to test a deeper decoder
             )
 
+            import time
+            start_time = time.time()
             cls_logits, mask_logits, inter_masks = head(features)
+            end_time = time.time()  # End the timer
+            print(f"Time taken: {end_time - start_time:.4f} seconds")
 
             print("Class logits shape:      ", cls_logits.shape)      # (B, Q, num_classes)
             print("Mask logits shape:       ", mask_logits.shape)     # (B, Q, H, W)
@@ -263,12 +271,12 @@ if __name__ == "__main__":
         import yaml
         with open(config_path, "r") as f:
             cfg = yaml.safe_load(f)
-        input_channels = cfg["scratch"]["head"]["input_channels"]
+        input_channels = cfg["head"]["input_channels"]
         features = []
         for i, C in enumerate(input_channels):
             H, W = spatial_sizes[i]
             features.append(torch.randn(B, C, H, W))
-        head = Mask2FormerHead(**cfg["scratch"]["head"])
+        head = Mask2FormerHead(**cfg["head"])
         cls_logits, mask_logits, inter_masks = head(features)
         print("Class logits shape:      ", cls_logits.shape)
         print("Mask logits shape:       ", mask_logits.shape)

@@ -16,6 +16,6 @@ head:
   num_classes: 8                              # Number of segmentation classes
   d_model: 64                                 # Transformer model dimension (must be divisible by nhead)
   feature_project_dim: 128                    # Projection dim for all pixel decoder inputs (from input_channels → d_model)
-  num_queries: 128                            # Number of learnable object queries
+  num_queries: 64                             # Number of learnable object queries
   nhead: 2                                    # Must divide d_model
   rounds: 4                                   # Number of rounds in decoder layer

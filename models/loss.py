@@ -150,45 +150,59 @@ class MaskLoss(nn.Module):
         return total_loss, loss_details
 
 
-# ------------------------------
-# 🔍 Quick Test
-# ------------------------------
+
+
+# Quick Test for Loss
 if __name__ == "__main__":
+    import random, numpy as np, time
     torch.manual_seed(42)
-    random.seed(42)
     np.random.seed(42)
+    random.seed(42)
 
-    batch_size  = 2
-    num_queries = 100
-    num_classes = 9
-    H, W        = 128, 128
-    num_aux     = 6
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Testing on device: {device}")
+    print(f"Running loss test on device: {device}")
 
-    # Create dummy predictions
+    batch_size = 4
+    num_queries = 100
+    num_classes = 8
+    H, W = 128, 128
+
+    # Simulate model predictions
     pred_logits = torch.randn(batch_size, num_queries, num_classes, device=device)
     pred_masks  = torch.randn(batch_size, num_queries, H, W, device=device)
-    aux_outputs = [torch.randn(batch_size, num_queries, H, W, device=device) for _ in range(num_aux)]
-    predictions = {"pred_logits": pred_logits, "pred_masks": pred_masks, "aux_outputs": aux_outputs}
 
-    # Create dummy targets
+    predictions = {
+        "pred_logits": pred_logits,
+        "pred_masks": pred_masks,
+    }
+
+    # Simulate ground truth targets
     targets = []
     for _ in range(batch_size):
-        num_objects = random.randint(1, num_queries)
-        labels = torch.randint(0, num_classes, (num_objects,), device=device)
-        masks = torch.randint(0, 2, (num_objects, H, W), device=device)
+        num_targets = random.randint(1, num_queries // 2)
+        labels = torch.randint(0, num_classes, (num_targets,), device=device)
+        masks = torch.randint(0, 2, (num_targets, H, W), dtype=torch.float32, device=device)
         targets.append({"labels": labels, "masks": masks})
 
-    # Instantiate loss
-    class_weights = (1.0 / torch.randint(10, 1000, (num_classes,), dtype=torch.float32)).to(device)
-    class_weights /= class_weights.sum()
-    criterion = MaskLoss(lambda_cls=1.0, lambda_mask=5.0, lambda_dice=5.0, aux_weight=0.5, class_weights=class_weights)
+    # Dummy class weights
+    weights = torch.rand(num_classes, device=device)
+    weights /= weights.sum()
 
-    # Compute loss
+    # Instantiate and compute loss
+    criterion = MaskLoss(
+        class_weights=weights,
+        lambda_cls=1.0,
+        lambda_mask=5.0,
+        lambda_dice=5.0,
+        # num_sample_points=125
+    )
+
+    print("Computing loss...")
+    start = time.time()
     total_loss, loss_details = criterion(predictions, targets)
+    end = time.time()
 
-    print("\n--- Loss Output ---")
+    print(f"\nLoss computed in {end - start:.4f}s")
     print(f"Total Loss: {total_loss.item():.4f}")
     for k, v in loss_details.items():
         print(f"{k}: {v.item():.4f}")

@@ -38,6 +38,8 @@ class Segmentation(nn.Module):
         }
 
 
+
+
 # Quick test for the Segmentation model.
 if __name__ == "__main__":
     from types import SimpleNamespace

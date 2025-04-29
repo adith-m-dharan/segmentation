@@ -216,19 +216,21 @@ class SwinBackbone(nn.Module):
         return features
 
 
+
+
 # Quick test (optional):
 if __name__ == "__main__":
     import yaml
     import os
 
-    config_path = "configs/model.yaml"  # Set to None for looped test
-    B = 1
+    config_path = None # "configs/model.yaml"  # Set to None for looped test
+    B = 64
 
     if config_path is not None and os.path.exists(config_path):
         print(f"\nLoading SwinBackbone config from: {config_path}")
         with open(config_path, "r") as f:
             cfg = yaml.safe_load(f)
-        backbone_cfg = cfg["scratch"]["backbone"]
+        backbone_cfg = cfg["backbone"]
 
         model = SwinBackbone(**backbone_cfg)
         dummy = torch.randn(B, backbone_cfg["in_chans"], backbone_cfg["img_size"], backbone_cfg["img_size"])
@@ -267,7 +269,12 @@ if __name__ == "__main__":
                 num_stages=num_stages
             )
             dummy = torch.randn(B, 3, img_size, img_size)
+
+            import time
+            start_time = time.time()
             outputs = model(dummy)
+            end_time = time.time()  # End the timer
+            print(f"Time taken: {end_time - start_time:.4f} seconds")
 
             assert len(outputs) == num_stages, f"Got {len(outputs)} outputs, expected {num_stages}"
             print(f"Output count: {len(outputs)}")
