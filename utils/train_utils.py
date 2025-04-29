@@ -13,6 +13,17 @@ import matplotlib.pyplot as plt
 from collections import Counter
 from torchvision.transforms.functional import to_pil_image
 
+class Normalize(torch.nn.Module):
+    def __init__(self, model, normalize):
+        super().__init__()
+        self.model = model
+        self.normalize = normalize
+
+    def forward(self, x):
+        x = x.float() / 255.0 if x.max() > 1 else x
+        x = self.normalize(x)
+        return self.model(x)
+    
 def convert_semantic_to_targets(masks, num_classes):
     """
     Convert semantic masks (B, H, W) to target format:

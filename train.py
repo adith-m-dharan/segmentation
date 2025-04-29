@@ -2,6 +2,7 @@ try:
     import os, sys, torch, wandb
     import torch.optim as optim
     import torch.nn.functional as F
+    import torchvision.transforms as T
     from torch.utils.data import DataLoader
     from torchvision import transforms
     from torch.cuda.amp import autocast, GradScaler
@@ -39,31 +40,16 @@ def setup_model(cfg, device):
 
     if cfg.model.inbuilt:
         from torchvision.models.segmentation import fcn_resnet50
-        import torch.nn.functional as F
-        import torchvision.transforms as T
-
         print("Using Inbuilt model")
-        model = fcn_resnet50(weights=None, weights_backbone=None, num_classes=num_classes).to(device)
-        normalize_transform = T.Normalize(mean=[0.485, 0.456, 0.406],
-                                        std=[0.229, 0.224, 0.225])
-        class NormalizedFCN(torch.nn.Module):
-            def __init__(self, model, normalize):
-                super().__init__()
-                self.model = model
-                self.normalize = normalize
-
-            def forward(self, x):
-                x = x.float() / 255.0 if x.max() > 1 else x
-                x = self.normalize(x)
-                return self.model(x)
-        
-        model = NormalizedFCN(model, normalize_transform).to(device)
-        class_weights = torch.ones(num_classes, device=device)
+        if cfg.model.prebuilt:
+            print("Using Prebuilt weights")
+            model = fcn_resnet50(num_classes=num_classes).to(device)
+        else:
+            model = fcn_resnet50(weights=None, weights_backbone=None, num_classes=num_classes).to(device)
         criterion = lambda outputs, targets: (
             F.cross_entropy(outputs["out"], targets.to(outputs["out"].device), weight=class_weights),
             {"cross_entropy": F.cross_entropy(outputs["out"], targets.to(outputs["out"].device), weight=class_weights).item()}
         )
-
     else:
         print("Using Custom Model")
         model = Segmentation(config_path=cfg.paths.model_config).to(device)
@@ -75,10 +61,11 @@ def setup_model(cfg, device):
             num_sample_points=cfg.training.sample_points,
             aux_weight=cfg.training.weight_aux
         )
-
+    normalize_transform = T.Normalize(mean=[0.485, 0.456, 0.406],
+                                    std=[0.229, 0.224, 0.225])
+    model = Normalize(model, normalize_transform).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=cfg.training.learning_rate, weight_decay=cfg.training.weight_decay)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=cfg.training.step_size, gamma=cfg.training.gamma)
-
     return model, criterion, optimizer, scheduler
 
 
@@ -156,9 +143,6 @@ def main(cfg):
 
     device = torch.device(cfg.hardware.device if torch.cuda.is_available() else "cpu")
     print(f"Running on device: {device}")
-
-    # Ensure LMDB is prepared
-    prepare_lmdb(cfg.dataset.base_input, cfg.dataset.base_output)
 
     train_loader, test_loader = setup_data(cfg)
     model, criterion, optimizer, scheduler = setup_model(cfg, device)

@@ -4,7 +4,6 @@ import base64
 import io
 from PIL import Image
 import torch
-import numpy as np
 from torchvision import transforms
 from omegaconf import OmegaConf
 

@@ -3,7 +3,8 @@
 # Model configuration
 model:
   num_classes: 8
-  inbuilt: False
+  inbuilt: True
+  prebuilt: False
   inference_prebuilt: True
 
 # Training hyperparameters
